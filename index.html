@@ -291,12 +291,21 @@ function loadAll() {
 function parseSettings(rows) {
   clients = []; assignees = [];
   if (!rows.length) return;
+  // Col A = Clients, Col B = Assignees, Col C = ArchivedClients
+  // Col D = Statuses, Col E = Recurrence (read-only, not used by app)
+  var archivedNames = [];
   rows.forEach(function(row) {
-    if (row[0] && row[0] !== 'Clients') {
-      clients.push({name: row[0], archived: (row[1]||'').toLowerCase() === 'archived'});
+    var val = (row[2]||'').trim();
+    if (val && val !== 'ArchivedClients' && val !== 'Archive') archivedNames.push(val);
+  });
+  rows.forEach(function(row) {
+    var clientName   = (row[0]||'').trim();
+    var assigneeName = (row[1]||'').trim();
+    if (clientName && clientName !== 'Clients') {
+      clients.push({name: clientName, archived: archivedNames.indexOf(clientName) >= 0});
     }
-    if (row[2] && row[2] !== 'Assignees') {
-      if (assignees.indexOf(row[2]) < 0) assignees.push(row[2]);
+    if (assigneeName && assigneeName !== 'Assignees') {
+      if (assignees.indexOf(assigneeName) < 0) assignees.push(assigneeName);
     }
   });
 }
@@ -380,18 +389,19 @@ function deleteTaskFromSheet(t) {
 
 function saveSettings() {
   setSyncStatus('syncing','Saving...');
-  var rows = [['Clients','Archived?','Assignees','']];
-  var maxLen = Math.max(clients.length, assignees.length);
+  // Only write to cols A, B, C - leaves D (Statuses) and E (Recurrence) untouched
+  var archivedClients = clients.filter(function(c){return c.archived;}).map(function(c){return c.name;});
+  var maxLen = Math.max(clients.length, assignees.length, archivedClients.length);
+  var rows = [['Clients','Assignees','ArchivedClients']];
   for (var i = 0; i < maxLen; i++) {
-    var c = clients[i];
     rows.push([
-      c ? c.name : '',
-      c ? (c.archived ? 'archived' : '') : '',
-      assignees[i] || '',
-      ''
+      clients[i] ? clients[i].name : '',
+      assignees[i] ? assignees[i] : '',
+      archivedClients[i] ? archivedClients[i] : ''
     ]);
   }
-  sheetClear('Settings!A:D').then(function(){
+  // Clear only A:C, never touching D:E
+  sheetClear('Settings!A:C').then(function(){
     return sheetUpdate('Settings!A1', rows);
   }).then(function(){ setSyncStatus('synced','Saved'); })
   .catch(function(){ setSyncStatus('error','Save failed'); });
