@@ -203,10 +203,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="toast" id="toast"></div>
 </div>
 <script>
-// -- CONFIG ----------------------------------------------
-var SHEET_ID = '1vdPFSqkzpvWNM8PWIOWEEl6i2Rw6x6UIU4g9MeJWgPo';
-var API_KEY  = 'AIzaSyCFxLXvKd5Dt7E1gLway15VfAncG0nDo2k';
-var BASE_URL = 'https://sheets.googleapis.com/v4/spreadsheets/'+SHEET_ID+'/values/';
+// -- CONFIG --
+var WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbyiMSOCQk0MQjqAHT0LX8Vk-BHxWFnOd8IRttVhbpsQAKHD_bIeU8DKkHSYfexObA6Bcw/exec';
 
 // -- CONSTANTS -------------------------------------------
 var STATUSES = ['Backlog','To Do','In Progress','Complete'];
@@ -228,32 +226,34 @@ var currentPage='everything', currentClientPage='', currentTaskListPage='', curr
 var dragId=null, nextId=1;
 
 // -- SHEETS API ------------------------------------------
-function sheetGet(range) {
-  return fetch(BASE_URL + encodeURIComponent(range) + '?key=' + API_KEY)
+function post(body) {
+  return fetch(WEBAPP_URL, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r){ return r.json(); });
+}
+
+function sheetGet(sheetName) {
+  return fetch(WEBAPP_URL + '?action=read&sheet=' + encodeURIComponent(sheetName))
     .then(function(r){ return r.json(); })
     .then(function(d){ return d.values || []; });
 }
 
-function sheetAppend(range, values) {
-  return fetch(BASE_URL + encodeURIComponent(range) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS&key=' + API_KEY, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({values: values})
-  }).then(function(r){ return r.json(); });
+function sheetAppend(sheetName, row) {
+  return post({action:'append', sheet:sheetName, row:row});
 }
 
-function sheetUpdate(range, values) {
-  return fetch(BASE_URL + encodeURIComponent(range) + '?valueInputOption=RAW&key=' + API_KEY, {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({values: values})
-  }).then(function(r){ return r.json(); });
+function sheetUpdate(sheetName, rowNum, values) {
+  return post({action:'update', sheet:sheetName, row:rowNum, values:values});
 }
 
-function sheetClear(range) {
-  return fetch(BASE_URL + encodeURIComponent(range) + ':clear?key=' + API_KEY, {
-    method: 'POST', headers: {'Content-Type':'application/json'}
-  }).then(function(r){ return r.json(); });
+function sheetClearRow(sheetName, rowNum) {
+  return post({action:'clearRow', sheet:sheetName, row:rowNum});
+}
+
+function sheetOverwrite(sheetName, values, startCol) {
+  return post({action:'overwrite', sheet:sheetName, values:values, startCol:startCol||1});
 }
 
 // -- SYNC STATUS -----------------------------------------
@@ -269,9 +269,9 @@ function setSyncStatus(state, label) {
 function loadAll() {
   setSyncStatus('syncing','Loading...');
   Promise.all([
-    sheetGet('Settings!A:D'),
-    sheetGet('TaskLists!A:B'),
-    sheetGet('Tasks!A:J')
+    sheetGet('Settings'),
+    sheetGet('TaskLists'),
+    sheetGet('Tasks')
   ]).then(function(results) {
     parseSettings(results[0]);
     parseTaskLists(results[1]);
@@ -362,17 +362,17 @@ function taskToRow(t) {
 function saveTask(t) {
   setSyncStatus('syncing','Saving...');
   if (t._row) {
-    sheetUpdate('Tasks!A'+t._row+':J'+t._row, [taskToRow(t)])
-      .then(function(){ setSyncStatus('synced','Saved'); })
+    sheetUpdate('Tasks', t._row, taskToRow(t))
+      .then(function(r){
+        if (r && r.error) { setSyncStatus('error','Save failed: '+r.error); return; }
+        setSyncStatus('synced','Saved');
+      })
       .catch(function(){ setSyncStatus('error','Save failed'); });
   } else {
-    sheetAppend('Tasks!A:J', [taskToRow(t)])
-      .then(function(res){
-        var updatedRange = res.updates && res.updates.updatedRange;
-        if (updatedRange) {
-          var match = updatedRange.match(/(\d+)$/);
-          if (match) t._row = parseInt(match[1], 10);
-        }
+    sheetAppend('Tasks', taskToRow(t))
+      .then(function(r){
+        if (r && r.error) { setSyncStatus('error','Save failed: '+r.error); return; }
+        if (r && r.row) t._row = r.row;
         setSyncStatus('synced','Saved');
       })
       .catch(function(){ setSyncStatus('error','Save failed'); });
@@ -382,14 +382,17 @@ function saveTask(t) {
 function deleteTaskFromSheet(t) {
   if (!t._row) return;
   setSyncStatus('syncing','Deleting...');
-  sheetUpdate('Tasks!A'+t._row+':J'+t._row, [['','','','','','','','','','']])
-    .then(function(){ setSyncStatus('synced','Synced'); })
+  sheetClearRow('Tasks', t._row)
+    .then(function(r){
+      if (r && r.error) { setSyncStatus('error','Delete failed: '+r.error); return; }
+      setSyncStatus('synced','Synced');
+    })
     .catch(function(){ setSyncStatus('error','Delete failed'); });
 }
 
 function saveSettings() {
   setSyncStatus('syncing','Saving...');
-  // Only write to cols A, B, C - leaves D (Statuses) and E (Recurrence) untouched
+  // Only writes cols A, B, C - leaves D (Statuses) E (Recurrence) untouched
   var archivedClients = clients.filter(function(c){return c.archived;}).map(function(c){return c.name;});
   var maxLen = Math.max(clients.length, assignees.length, archivedClients.length);
   var rows = [['Clients','Assignees','ArchivedClients']];
@@ -400,11 +403,12 @@ function saveSettings() {
       archivedClients[i] ? archivedClients[i] : ''
     ]);
   }
-  // Clear only A:C, never touching D:E
-  sheetClear('Settings!A:C').then(function(){
-    return sheetUpdate('Settings!A1', rows);
-  }).then(function(){ setSyncStatus('synced','Saved'); })
-  .catch(function(){ setSyncStatus('error','Save failed'); });
+  sheetOverwrite('Settings', rows, 1)
+    .then(function(r){
+      if (r && r.error) { setSyncStatus('error','Save failed: '+r.error); return; }
+      setSyncStatus('synced','Saved');
+    })
+    .catch(function(){ setSyncStatus('error','Save failed'); });
 }
 
 function saveTaskLists() {
@@ -415,10 +419,12 @@ function saveTaskLists() {
       rows.push([client, tl]);
     });
   });
-  sheetClear('TaskLists!A:B').then(function(){
-    return sheetUpdate('TaskLists!A1', rows);
-  }).then(function(){ setSyncStatus('synced','Saved'); })
-  .catch(function(){ setSyncStatus('error','Save failed'); });
+  sheetOverwrite('TaskLists', rows, 1)
+    .then(function(r){
+      if (r && r.error) { setSyncStatus('error','Save failed: '+r.error); return; }
+      setSyncStatus('synced','Saved');
+    })
+    .catch(function(){ setSyncStatus('error','Save failed'); });
 }
 
 // -- COLORS & NAV -----------------------------------------
