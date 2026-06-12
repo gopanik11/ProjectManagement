@@ -225,34 +225,27 @@ var currentPage='everything', currentClientPage='', currentTaskListPage='', curr
 var dragId=null, nextId=1;
 
 // ===== REPLACED: 4 old Sheets API functions with Apps Script versions =====
-function post(body) {
-  return fetch(WEBAPP_URL, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  }).then(function(r){ return r.json(); });
+function apiGet(params) {
+  var qs = Object.keys(params).map(function(k){
+    var v = typeof params[k]==='object' ? JSON.stringify(params[k]) : String(params[k]);
+    return k + '=' + encodeURIComponent(v);
+  }).join('&');
+  return fetch(WEBAPP_URL + '?' + qs).then(function(r){ return r.json(); });
 }
-
 function sheetGet(sheetName) {
-  return fetch(WEBAPP_URL + '?action=read&sheet=' + encodeURIComponent(sheetName))
-    .then(function(r){ return r.json(); })
-    .then(function(d){ return d.values || []; });
+  return apiGet({action:'read', sheet:sheetName}).then(function(d){ return d.values || []; });
 }
-
 function sheetAppend(sheetName, row) {
-  return post({action:'append', sheet:sheetName, row:row});
+  return apiGet({action:'append', sheet:sheetName, row:row});
 }
-
 function sheetUpdate(sheetName, rowNum, values) {
-  return post({action:'update', sheet:sheetName, row:rowNum, values:values});
+  return apiGet({action:'update', sheet:sheetName, rowNum:rowNum, values:values});
 }
-
 function sheetClearRow(sheetName, rowNum) {
-  return post({action:'clearRow', sheet:sheetName, row:rowNum});
+  return apiGet({action:'clearRow', sheet:sheetName, rowNum:rowNum});
 }
-
 function sheetOverwrite(sheetName, values) {
-  return post({action:'overwrite', sheet:sheetName, values:values, startCol:1});
+  return apiGet({action:'overwrite', sheet:sheetName, values:values});
 }
 // ===== END REPLACED SECTION =====
 
